@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import config
 from .iupac import validate_iupac
@@ -316,4 +316,80 @@ class ReplacementRankingOut(BaseModel):
     candidate_count: int
     candidates: list[ReplacementCandidateOut] = Field(
         description="候选排名（按层、层内按请求输入顺序稳定排序）"
+    )
+
+
+# 阈值扫描网格：两个阈值各自的取值域（闭区间）与单元总数上限
+THRESHOLD_MAP_MIN = 1
+THRESHOLD_MAP_MAX = 200
+THRESHOLD_MAP_MAX_CELLS = 40000
+
+
+class ThresholdMapRequest(BaseModel):
+    continuous_min: int = Field(
+        ...,
+        ge=THRESHOLD_MAP_MIN,
+        le=THRESHOLD_MAP_MAX,
+        description="连续互补阈值下限（含，1～200）",
+    )
+    continuous_max: int = Field(
+        ...,
+        ge=THRESHOLD_MAP_MIN,
+        le=THRESHOLD_MAP_MAX,
+        description="连续互补阈值上限（含，1～200）",
+    )
+    three_prime_min: int = Field(
+        ...,
+        ge=THRESHOLD_MAP_MIN,
+        le=THRESHOLD_MAP_MAX,
+        description="3′端连续互补阈值下限（含，1～200）",
+    )
+    three_prime_max: int = Field(
+        ...,
+        ge=THRESHOLD_MAP_MIN,
+        le=THRESHOLD_MAP_MAX,
+        description="3′端连续互补阈值上限（含，1～200）",
+    )
+
+    @model_validator(mode="after")
+    def _check_ranges(self) -> "ThresholdMapRequest":
+        if self.continuous_min > self.continuous_max:
+            raise ValueError("continuous_min 不能大于 continuous_max")
+        if self.three_prime_min > self.three_prime_max:
+            raise ValueError("three_prime_min 不能大于 three_prime_max")
+        cells = (self.continuous_max - self.continuous_min + 1) * (
+            self.three_prime_max - self.three_prime_min + 1
+        )
+        if cells > THRESHOLD_MAP_MAX_CELLS:
+            raise ValueError(
+                f"阈值组合数 {cells} 超过上限 {THRESHOLD_MAP_MAX_CELLS}"
+            )
+        return self
+
+
+class ThresholdCellOut(BaseModel):
+    continuous_threshold: int = Field(description="连续互补阈值 C")
+    three_prime_threshold: int = Field(description="3′端连续互补阈值 T")
+    high_count: int = Field(description="3′端连续互补 t >= T 的配对数")
+    medium_count: int = Field(
+        description="t < T 且最长连续互补 c >= C 的配对数"
+    )
+    low_count: int = Field(description="t < T 且 c < C 的配对数")
+    is_original: bool = Field(
+        description="该单元是否等于批次提交时的原阈值组合"
+    )
+
+
+class ThresholdMapOut(BaseModel):
+    batch_id: str
+    pair_count: int = Field(description="批次配对总数（每个单元三级计数之和恒等于它）")
+    continuous_min: int
+    continuous_max: int
+    three_prime_min: int
+    three_prime_max: int
+    cell_count: int = Field(description="返回的阈值组合单元数")
+    original_continuous_threshold: int = Field(description="批次原连续互补阈值")
+    original_three_prime_threshold: int = Field(description="批次原 3′端连续互补阈值")
+    cells: list[ThresholdCellOut] = Field(
+        description="逐阈值组合的三级计数（按 3′端阈值、连续互补阈值升序）"
     )

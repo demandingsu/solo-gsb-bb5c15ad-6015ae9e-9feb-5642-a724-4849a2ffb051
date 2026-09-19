@@ -10,6 +10,7 @@ from .compare import PairDiff, compare_pair_risks
 from .dimer import PairResult, analyze_pair
 from .pooling import build_pool_plan
 from .ranking import non_dominated_layers
+from .threshold_map import threshold_map_cells
 
 
 def _pair_to_row(pair_index: int, r: PairResult) -> tuple:
@@ -348,6 +349,63 @@ def rank_replacements(
         "primer_count": n,
         "candidate_count": len(candidates),
         "candidates": ranked,
+    }
+
+
+def build_threshold_map(
+    *,
+    batch_id: str,
+    continuous_min: int,
+    continuous_max: int,
+    three_prime_min: int,
+    three_prime_max: int,
+) -> dict | None:
+    """对已保存批次做阈值扫描网格的三级风险计数。
+
+    纯读操作：仅读取已保存配对的两个落库指标（最长连续互补、3′端连续
+    互补），按既有 high/medium/low 规则在二维前缀和上聚合；不重算对齐、
+    不修改批次。批次不存在返回 None（由路由层转 404）。
+    """
+    with db.get_conn() as conn:
+        batch = db.get_batch(conn, batch_id)
+        if batch is None:
+            return None
+        metrics = db.get_pair_metrics(conn, batch_id)
+
+    cells = threshold_map_cells(
+        metrics,
+        continuous_min=continuous_min,
+        continuous_max=continuous_max,
+        three_prime_min=three_prime_min,
+        three_prime_max=three_prime_max,
+    )
+
+    orig_continuous = batch["continuous_threshold"]
+    orig_three_prime = batch["three_prime_threshold"]
+    return {
+        "batch_id": batch_id,
+        "pair_count": len(metrics),
+        "continuous_min": continuous_min,
+        "continuous_max": continuous_max,
+        "three_prime_min": three_prime_min,
+        "three_prime_max": three_prime_max,
+        "cell_count": len(cells),
+        "original_continuous_threshold": orig_continuous,
+        "original_three_prime_threshold": orig_three_prime,
+        "cells": [
+            {
+                "continuous_threshold": cell.continuous_threshold,
+                "three_prime_threshold": cell.three_prime_threshold,
+                "high_count": cell.high_count,
+                "medium_count": cell.medium_count,
+                "low_count": cell.low_count,
+                "is_original": (
+                    cell.continuous_threshold == orig_continuous
+                    and cell.three_prime_threshold == orig_three_prime
+                ),
+            }
+            for cell in cells
+        ],
     }
 
 

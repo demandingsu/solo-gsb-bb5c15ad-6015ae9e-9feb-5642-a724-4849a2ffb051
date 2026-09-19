@@ -10,6 +10,9 @@ SQLite，支持事后查询。对已保存批次还可通过 `POST /api/batches/
 通过 `POST /api/batches/{id}/replacement-ranking` 在**内存**中模拟用候选序列
 替换某条引物，按 high 配对数、最大 3′连续互补、最大连续互补三个指标做
 非支配分层排名（不落库）；
+通过 `POST /api/batches/{id}/threshold-map` 仅读取已保存配对的两个落库指标
+（最长连续互补、3′端连续互补），用**二维前缀和**在 1～200 的阈值网格上
+批量重算三级风险计数（不重算对齐、不修改批次）；
 通过 `GET /api/batches/{base_id}/compare/{target_id}` 按引物名称构造稳定配对键，
 对比两个批次的配对风险升降（escalated / deescalated / introduced / resolved）。
 
@@ -31,6 +34,7 @@ docker compose up --build -d
 | 批次接口 | http://localhost:8000/api/batches |
 | 引物分池 | `POST http://localhost:8000/api/batches/{id}/pool-plan` |
 | 替换候选排名 | `POST http://localhost:8000/api/batches/{id}/replacement-ranking` |
+| 阈值扫描网格 | `POST http://localhost:8000/api/batches/{id}/threshold-map` |
 | 批次风险对比 | `GET http://localhost:8000/api/batches/{base_id}/compare/{target_id}` |
 
 > 监听端口 **8000**。SQLite 数据库文件保存在命名卷 `primer-data` 内
@@ -299,6 +303,76 @@ curl -s -X POST http://localhost:8000/api/batches/f98cdd27-.../replacement-ranki
   最大 3′连续互补为 0 时，所有该指标为 0 的受影响配对都会列入
   `max_three_prime_pairs`。
 
+### `POST /api/batches/{id}/threshold-map` — 阈值扫描网格的三级风险计数
+
+对**已保存批次**做一次阈值敏感性扫描：请求给出连续互补阈值与 3′端连续互补
+阈值各自的整数起止范围（均为 **1～200** 的闭区间，组合数 **≤ 40000**，即最多
+覆盖整个 200×200 网格），服务返回每个阈值组合下按既有规则
+（`high`：3′端连续互补 `t >= T`；`medium`：`t < T` 且最长连续互补 `c >= C`；
+否则 `low`）归类的三级配对数量：
+
+* **只用落库指标**：仅读取已保存配对的 `max_complementary_run` 与
+  `terminal_run` 两列，**不重算对齐、不修改批次**（纯读操作）；
+* **二维前缀和聚合**：先把全部配对撒到 `(t, c)` 二维直方图并求二维前缀和
+  （与二维差分等价的区间累加），每个网格单元的三级计数都是 O(1) 查表，
+  整体复杂度 O(指标上界² + 配对数 + 单元数)，**不逐配对遍历网格**；
+* **结果排序**：单元按 3′端阈值升序、再按连续互补阈值升序；
+* **原阈值标记**：等于批次提交时阈值组合的单元标记 `is_original: true`
+  （原阈值落在请求范围外时所有单元均为 `false`）；该单元的三级计数恒等于
+  批次落库的 `high/medium/low_risk_count`；
+* 批次不存在返回 `404`；阈值越出 1～200、下限大于上限或组合数超过
+  40000 返回 `422`。
+
+```bash
+curl -s -X POST http://localhost:8000/api/batches/f98cdd27-.../threshold-map \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "continuous_min": 3,
+    "continuous_max": 6,
+    "three_prime_min": 2,
+    "three_prime_max": 4
+  }'
+```
+
+请求字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `continuous_min` / `continuous_max` | 连续互补阈值起止（含端点，1～200，下限 ≤ 上限） |
+| `three_prime_min` / `three_prime_max` | 3′端连续互补阈值起止（含端点，1～200，下限 ≤ 上限） |
+
+返回示例：
+
+```json
+{
+  "batch_id": "f98cdd27-...",
+  "pair_count": 3,
+  "continuous_min": 3, "continuous_max": 6,
+  "three_prime_min": 2, "three_prime_max": 4,
+  "cell_count": 12,
+  "original_continuous_threshold": 4,
+  "original_three_prime_threshold": 3,
+  "cells": [
+    {
+      "continuous_threshold": 3,
+      "three_prime_threshold": 2,
+      "high_count": 1, "medium_count": 0, "low_count": 2,
+      "is_original": false
+    },
+    {
+      "continuous_threshold": 4,
+      "three_prime_threshold": 3,
+      "high_count": 1, "medium_count": 0, "low_count": 2,
+      "is_original": true
+    }
+  ]
+}
+```
+
+* 每个单元 `high_count + medium_count + low_count` 恒等于 `pair_count`；
+* `cell_count` 恒等于 `(continuous_max - continuous_min + 1) ×
+  (three_prime_max - three_prime_min + 1)`。
+
 ### `GET /api/batches/{base_id}/compare/{target_id}` — 批次风险对比
 
 按引物**名称**构造稳定配对键，对比 base → target 两个已保存批次的配对风险：
@@ -458,10 +532,11 @@ app/
   dimer.py      # 错位枚举、连续互补/3′端长度、风险判定、同分规则
   pooling.py    # 异二聚体冲突图构建与 DSatur 风格确定性贪心分池
   ranking.py    # 替换候选的非支配分层（Pareto front，越小越优）
+  threshold_map.py  # 阈值扫描网格的三级计数（二维前缀和区间累加）
   compare.py    # 批次间稳定配对键构造与风险升降分类（escalated 等四类）
   schemas.py    # Pydantic 模型与输入校验
   db.py         # SQLite 建表、写入、查询
-  services.py   # 批次计算编排（N 自二聚体 + N(N-1)/2 异二聚体）、分池、替换排名与对比编排
+  services.py   # 批次计算编排（N 自二聚体 + N(N-1)/2 异二聚体）、分池、替换排名、阈值网格与对比编排
   main.py       # FastAPI 路由
   cli.py        # initdb 命令
 tests/          # pytest 算法与 API 测试

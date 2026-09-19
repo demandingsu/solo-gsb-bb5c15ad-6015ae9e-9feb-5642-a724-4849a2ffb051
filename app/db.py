@@ -163,6 +163,20 @@ def get_pairs(
     return conn.execute(sql, (batch_id,)).fetchall()
 
 
+def get_pair_metrics(
+    conn: sqlite3.Connection, batch_id: str
+) -> list[tuple[int, int]]:
+    """返回全部配对的 (max_complementary_run, terminal_run)，按 pair_index 升序。"""
+    rows = conn.execute(
+        "SELECT max_complementary_run, terminal_run FROM pair_results "
+        "WHERE batch_id = ? ORDER BY pair_index",
+        (batch_id,),
+    ).fetchall()
+    return [
+        (row["max_complementary_run"], row["terminal_run"]) for row in rows
+    ]
+
+
 def list_batches(
     conn: sqlite3.Connection, limit: int, offset: int
 ) -> list[sqlite3.Row]:
