@@ -21,3 +21,8 @@ MAX_PRIMER_LENGTH: int = int(os.getenv("PRIMER_MAX_LENGTH", "200"))
 
 # 数据库初始化时是否重建表结构（容器首次启动自动初始化，无需开启）
 RESET_ON_START: bool = _env_bool("PRIMER_DB_RESET", "0")
+
+# 阈值地图接口的固定约束（接口规格，非部署可调）：
+# 阈值起止范围 1～200，单次请求的阈值组合数不超过 40000
+THRESHOLD_MAP_MAX_THRESHOLD: int = 200
+THRESHOLD_MAP_MAX_CELLS: int = 40000

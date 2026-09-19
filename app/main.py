@@ -20,8 +20,16 @@ from .schemas import (
     PrimerOut,
     ReplacementRankingOut,
     ReplacementRankingRequest,
+    ThresholdMapOut,
+    ThresholdMapRequest,
 )
-from .services import compare_batches, plan_batch_pools, rank_replacements, run_batch
+from .services import (
+    build_batch_threshold_map,
+    compare_batches,
+    plan_batch_pools,
+    rank_replacements,
+    run_batch,
+)
 
 
 @asynccontextmanager
@@ -211,6 +219,31 @@ def create_replacement_ranking(
     if result is None:
         raise HTTPException(status_code=404, detail="批次不存在")
     return ReplacementRankingOut(**result)
+
+
+@app.post(
+    "/api/batches/{batch_id}/threshold-map",
+    tags=["batches"],
+    summary="已保存批次的阈值扫描地图（二维差分聚合，不重算对齐）",
+    response_model=ThresholdMapOut,
+    responses={
+        404: {"description": "批次不存在"},
+        422: {"description": "阈值范围非法或组合数超限"},
+    },
+)
+def create_threshold_map(
+    batch_id: str, payload: ThresholdMapRequest
+) -> ThresholdMapOut:
+    result = build_batch_threshold_map(
+        batch_id=batch_id,
+        continuous_start=payload.continuous_start,
+        continuous_end=payload.continuous_end,
+        three_prime_start=payload.three_prime_start,
+        three_prime_end=payload.three_prime_end,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    return ThresholdMapOut(**result)
 
 
 def _load_result(batch_id: str, *, risky_only: bool) -> BatchResult:

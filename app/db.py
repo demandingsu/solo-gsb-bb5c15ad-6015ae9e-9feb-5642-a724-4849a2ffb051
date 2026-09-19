@@ -163,6 +163,18 @@ def get_pairs(
     return conn.execute(sql, (batch_id,)).fetchall()
 
 
+def get_pair_metrics(
+    conn: sqlite3.Connection, batch_id: str
+) -> list[tuple[int, int]]:
+    """只取阈值地图所需的两个标量指标：(最长连续互补, 3′端连续互补)。"""
+    rows = conn.execute(
+        "SELECT max_complementary_run, terminal_run FROM pair_results "
+        "WHERE batch_id = ? ORDER BY pair_index",
+        (batch_id,),
+    ).fetchall()
+    return [(r["max_complementary_run"], r["terminal_run"]) for r in rows]
+
+
 def list_batches(
     conn: sqlite3.Connection, limit: int, offset: int
 ) -> list[sqlite3.Row]:

@@ -10,6 +10,7 @@ from .compare import PairDiff, compare_pair_risks
 from .dimer import PairResult, analyze_pair
 from .pooling import build_pool_plan
 from .ranking import non_dominated_layers
+from .threshold_map import build_threshold_map
 
 
 def _pair_to_row(pair_index: int, r: PairResult) -> tuple:
@@ -351,7 +352,69 @@ def rank_replacements(
     }
 
 
-def _diff_to_out(d: PairDiff) -> dict:    return {
+def build_batch_threshold_map(
+    *,
+    batch_id: str,
+    continuous_start: int,
+    continuous_end: int,
+    three_prime_start: int,
+    three_prime_end: int,
+) -> dict | None:
+    """已保存批次的阈值扫描地图（纯读，不重算对齐、不写库）。
+
+    只读取每个配对已落库的最长连续互补与 3′端连续互补两个标量指标，
+    用二维差分在请求阈值网格上聚合三级配对数量；单元按 3′端阈值、
+    连续互补阈值升序输出，并标记批次原阈值所在单元。
+    批次不存在返回 None（由路由层转 404）。
+    """
+    with db.get_conn() as conn:
+        batch = db.get_batch(conn, batch_id)
+        if batch is None:
+            return None
+        metrics = db.get_pair_metrics(conn, batch_id)
+
+    grid = build_threshold_map(
+        metrics,
+        continuous_start=continuous_start,
+        continuous_end=continuous_end,
+        three_prime_start=three_prime_start,
+        three_prime_end=three_prime_end,
+    )
+
+    batch_ct = batch["continuous_threshold"]
+    batch_tt = batch["three_prime_threshold"]
+
+    cells: list[dict] = []
+    for r, tt in enumerate(range(three_prime_start, three_prime_end + 1)):
+        for c, ct in enumerate(range(continuous_start, continuous_end + 1)):
+            high, medium, low = grid[r][c]
+            cells.append(
+                {
+                    "continuous_threshold": ct,
+                    "three_prime_threshold": tt,
+                    "high_count": high,
+                    "medium_count": medium,
+                    "low_count": low,
+                    "is_batch_threshold": ct == batch_ct and tt == batch_tt,
+                }
+            )
+
+    return {
+        "batch_id": batch_id,
+        "continuous_start": continuous_start,
+        "continuous_end": continuous_end,
+        "three_prime_start": three_prime_start,
+        "three_prime_end": three_prime_end,
+        "cell_count": len(cells),
+        "pair_count": len(metrics),
+        "batch_continuous_threshold": batch_ct,
+        "batch_three_prime_threshold": batch_tt,
+        "cells": cells,
+    }
+
+
+def _diff_to_out(d: PairDiff) -> dict:
+    return {
         "pair_key": d.pair_key,
         "name_a": d.name_a,
         "name_b": d.name_b,
